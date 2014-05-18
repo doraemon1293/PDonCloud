@@ -1,0 +1,482 @@
+import os
+import urllib
+import cgi
+import json
+import datetime
+import time
+import base64
+from google.appengine.ext import blobstore
+from google.appengine.ext import webapp
+from google.appengine.ext.webapp import blobstore_handlers
+from google.appengine.ext.webapp import template
+from google.appengine.ext.webapp.util import run_wsgi_app
+from google.appengine.api import users
+from google.appengine.ext import db
+
+
+class MainHandler(webapp.RequestHandler):
+    def get(self):
+        user = users.get_current_user()
+        if user:
+
+            upload_url = blobstore.create_upload_url('/upload')
+            #welcome and link to sign out
+            self.response.out.write("""<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+                                       <html>
+                                       <head>
+                                       <link rel="stylesheet" type="text/css" href="../static/style.css" />
+                                       <link href='http://fonts.googleapis.com/css?family=Belgrano' rel='stylesheet' type='text/css'>
+                                       </head>
+                                       <body>
+                                       <div class="header_right">Welcome %s, <a href="/show_statistics" >Statistics</a> <a href="/show_usage_report/%s" >Usage Report </a> <a href="%s" class="logout">Logout</a> </div>
+                                    """ %(user.nickname(),user.user_id(),users.create_logout_url("/")))
+
+            self.response.out.write('<form action="%s" method="POST" enctype="multipart/form-data">' % upload_url)
+            self.response.out.write("""Upload File: <input type="file" name="file"><br> <input type="submit" name="submit" value="Submit"> </form></body></html>""")
+            #validation
+            s=''
+            error=str(self.request.get('error'))
+            print error
+
+            if cmp(error,'window_size-overlap_size')==0:
+                s='window_size-overlap_size must be larger than 3'
+
+            self.response.out.write("<br><font color=red>%s</font>" %s)
+
+            self.response.out.write("""<table id="main-table">
+                                       <tr>
+                                       <th>File Name</th>
+                                       <th>Result</th>
+                                       <th>Submit plagiarism detection task</th>
+                                       </tr>
+                                    """)
+            #get all the user's files
+            query=db.GqlQuery('SELECT * FROM UserFile WHERE user_id=:1 ORDER BY file_name',user.user_id())
+            q=query.fetch(1000)
+            for e in q:
+                self.response.out.write('<tr>')
+                self.response.out.write('<td><a href="/serve/%s' % str(e.file_key.key()) + '">' + str(e.file_key.filename) + '</a></td>')
+                query=db.GqlQuery('SELECT * FROM Queue WHERE file_key= :1',str(e.file_key.key()) )
+                queue=query.fetch(1)
+                if queue!=[]:
+                    if queue[0].status_code==0:
+                        s='queueing'
+                    if queue[0].status_code==1:
+                        s='pending'
+                else:
+                    query=db.GqlQuery('SELECT * FROM Result WHERE file_key= :1',str(e.file_key.key()) )
+                    result=query.fetch(1)
+                    if result!=[]:
+                        s="""
+                            <table><td style="border:0"><form action="/show_result/%s" target="_blank"><input type="submit" value="View Result" /></form></td>
+                            <td style="border:0"><form action="/show_plain_text/%s" target="_blank"><input type="submit" value="Plagiarised Text" /></form></td></table>
+                          """ %( str(e.file_key.key()),str(e.file_key.key()))
+                    else:
+                        s='No Result'
+
+                self.response.out.write('<td>%s</td>' %s)
+
+                self.response.out.write('<td><form action="/queue/%s">' % str(e.file_key.key()))
+                self.response.out.write(""" Window Size:<select name="window_size">
+                                                        <option value="10">20</option>
+                                                        <option value="10">19</option>
+                                                        <option value="10">18</option>
+                                                        <option value="10">17</option>
+                                                        <option value="10">16</option>
+                                                        <option value="10">15</option>
+                                                        <option value="10">14</option>
+                                                        <option value="10">13</option>
+                                                        <option value="10">12</option>
+                                                        <option value="10">11</option>
+                                                        <option value="10">10</option>
+                                                        <option value="9">9</option>
+                                                        <option value="8" selected="selected">8</option>
+                                                        <option value="7">7</option>
+                                                        <option value="6">6</option>
+                                                        </select>
+                                            Overlap Size: <select name="overlap_size">
+                                                        <option value="10">16</option>
+                                                        <option value="10">15</option>
+                                                        <option value="10">14</option>
+                                                        <option value="10">13</option>
+                                                        <option value="10">12</option>
+                                                        <option value="10">11</option>
+                                                        <option value="10">10</option>
+                                                        <option value="10">9</option>
+                                                        <option value="7">7</option>
+                                                        <option value="6">6</option>
+                                                        <option value="5">5</option>
+                                                        <option value="4">4</option>
+                                                        <option value="3">3</option>
+                                                        <option value="2" selected="selected">2</option>
+                                                        <option value="1">1</option>
+                                                        </select>
+                                            Number of Instances: <select name="number_of_instances">
+                                                        <option value="4" selected="selected">4</option>
+                                                        <option value="3">3</option>
+                                                        <option value="2">2</option>
+                                                        </select>
+                                            <input type="submit" value="Submit">
+                                            </form></td></tr>
+                                        """)
+                self.response.out.write('</body></html')
+
+        else:#link to sign in
+            greeting = ("<a href=\"%s\">Sign in by your google account please!</a>." %
+                        users.create_login_url("/"))
+            self.response.out.write("<html><body>%s</body></html>" % greeting)
+
+class UserFile(db.Model):
+    user_id = db.StringProperty(required=True)
+    file_key = blobstore.BlobReferenceProperty(required=True)
+    file_name = db.StringProperty(required=True)
+
+class Queue(db.Model):
+    file_key = blobstore.BlobReferenceProperty(required=True)
+    window_size = db.IntegerProperty(required=True)
+    overlap_size = db.IntegerProperty(required=True)
+    number_of_instances = db.IntegerProperty(required=True)
+    status_code = db.IntegerProperty(required=True)
+
+class Result(db.Model):
+    file_key = blobstore.BlobReferenceProperty(required=True)
+    result = db.TextProperty(required=True)
+    plain_text = db.ListProperty (str,required=True)
+
+
+class Userlog(db.Model):
+    user_id = db.StringProperty(required=True)
+    file_key = blobstore.BlobReferenceProperty(required=True)
+    window_size = db.IntegerProperty(required=True)
+    overlap_size = db.IntegerProperty(required=True)
+    number_of_instances = db.IntegerProperty(required=True)
+    time = db.DateTimeProperty(required=True)
+
+
+class UploadHandler(blobstore_handlers.BlobstoreUploadHandler):
+    def post(self):
+        user = users.get_current_user()
+        upload_files = self.get_uploads('file')
+        blob_info = upload_files[0]
+        file_name = blob_info.filename
+        user_file = UserFile(user_id=user.user_id(),
+                              file_key=blob_info,
+                              file_name=file_name)
+        user_file.put()
+
+        self.redirect('/')
+
+class ServeHandler(blobstore_handlers.BlobstoreDownloadHandler):
+    def get(self, blob_key):
+        blob_key = str(urllib.unquote(blob_key))
+        if not blobstore.get(blob_key):
+            self.error(404)
+        else:
+            self.send_blob(blobstore.BlobInfo.get(blob_key), save_as=True)
+
+class QueueHandler(webapp.RequestHandler):
+    # queue task
+    def get(self,blob_key):
+        window_size =int(self.request.get('window_size'))
+        overlap_size=int(self.request.get('overlap_size'))
+        number_of_instances=int(self.request.get('number_of_instances'))
+        print window_size,overlap_size,number_of_instances
+        flag=False
+
+        if not window_size-overlap_size >3:
+#           window_size-overlap_size must be larger than 3
+            flag=True
+            time.sleep(1)
+            self.redirect('/?error=window_size-overlap_size')
+
+
+        if not flag:
+            user = users.get_current_user()
+            key = str(urllib.unquote(blob_key))
+            q = Queue(file_key=blob_key,
+                      window_size =window_size,
+                      overlap_size=overlap_size,
+                      number_of_instances=number_of_instances,
+                      status_code=0
+                      )
+            q.put()
+            userlog = Userlog(user_id=user.user_id(),
+                              file_key=blob_key,
+                              window_size =window_size,
+                              overlap_size=overlap_size,
+                              number_of_instances=number_of_instances,
+                              time=datetime.datetime.now()
+                              )
+            userlog.put()
+            time.sleep(1)
+            self.redirect('/')
+
+class GetQueueHandler(webapp.RequestHandler):
+    # get a queuing task
+    def get(self):
+        query=db.GqlQuery('SELECT * FROM Queue')
+        q=query.fetch(1)
+        if q!=[]:
+            dic={'key':str(q[0].file_key.key()),
+                 'window_size': q[0].window_size,
+                 'overlap_size':q[0].overlap_size,
+                 'number_of_instances':q[0].number_of_instances}
+            jsonarray = json.dumps(dic)
+
+            self.response.out.write(base64.encodestring(jsonarray))
+            q[0].status_code=1
+            q[0].put()
+
+class ResultHandler(webapp.RequestHandler):
+    #get result
+    def get(self,result):
+        result=str(urllib.unquote(result))
+        dic={}
+        for s in result.split(';'):
+            dic.update( {s.split(':')[0]:s.split(':')[1]} )
+
+        key =dic['file_key']
+        query=db.GqlQuery('SELECT * FROM Queue WHERE file_key= :1',key)
+        q=query.fetch(1)
+        del dic['file_key']
+
+        if q!=[]:
+            dic.update( {'window_size':q[0].window_size} )
+            dic.update( {'overlap_size':q[0].overlap_size} )
+            dic.update( {'number_of_instances':q[0].number_of_instances} )
+
+            query1=db.GqlQuery('SELECT * FROM Result WHERE file_key= :1',key)
+            results=query1.fetch(1000)
+            db.delete(results)
+
+            jsonarray=json.dumps(dic)
+            result= Result(file_key=q[0].file_key,
+                           result=jsonarray,
+                           plain_text=[]
+                          )
+            result.put()
+            q[0].delete()
+            self.response.out.write(jsonarray)
+
+class PlainTextHandler(webapp.RequestHandler):
+    #get plain text
+    def get(self,plain_text):
+        plain_text=str(urllib.unquote(plain_text))
+        key = plain_text.split(';')[0]
+        query=db.GqlQuery('SELECT * FROM Result WHERE file_key= :1',key)
+        q=query.fetch(1)
+        for s in plain_text.split(';')[1:]:
+            q[0].plain_text+=[s]
+        q[0].put()
+        self.response.out.write(q[0].plain_text)
+
+class ShowPlainTextHandler(webapp.RequestHandler):
+    # show plain texts
+    def get(self,key):
+        self.response.out.write("""<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+                           <html>
+                           <head>
+                           <link rel="stylesheet" type="text/css" href="../static/style.css" />
+                           <link href='http://fonts.googleapis.com/css?family=Belgrano' rel='stylesheet' type='text/css'>
+                           </head>
+                           <body>
+                           """)
+        key = str(urllib.unquote(key))
+        query=db.GqlQuery('SELECT * FROM Result WHERE file_key= :1',key)
+        q=query.fetch(1)
+        if q[0].plain_text!=[]:
+            self.response.out.write("""<table id="main-table">
+                                       <tr>
+                                       <th></th>
+                                       <th>Plain text</th>
+                                       </tr>
+                                    """)
+            for n,i in enumerate(q[0].plain_text):
+                self.response.out.write('<tr><td>%d</td><td>%s</td></tr>' %(n+1,i))
+            self.response.out.write('</table>')
+        else:
+            self.response.out.write('<h1>No plagiarism</h1>')
+        self.response.out.write('</body></html>')
+
+
+
+
+
+class ShowResultHandler(webapp.RequestHandler):
+#show result by google chart
+    def get(self,key):
+        self.response.out.write("""<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+                           <html>
+                           <head>
+                           <link rel="stylesheet" type="text/css" href="../static/style.css" />
+                           <link href='http://fonts.googleapis.com/css?family=Belgrano' rel='stylesheet' type='text/css'>
+                           </head>
+                           <body>
+                           """)
+        key = str(urllib.unquote(key))
+        query=db.GqlQuery('SELECT * FROM Result WHERE file_key= :1',key)
+        result=query.fetch(1)
+        if result!=[]:
+#
+            dic=json.loads(result[0].result)
+            overlap_size=int(dic['overlap_size'])
+            window_size=int(dic['window_size'])
+            length=int(dic['length'])
+            number_of_instances=int(dic['number_of_instances'])
+            del dic['overlap_size']
+            del dic['window_size']
+            del dic['length']
+            del dic['number_of_instances']
+            l_whole = sorted(dic.items(),key=lambda x:x[1],reverse=True)
+            total=0
+            for i in range(len(l_whole)):
+                total+=int(l_whole[i][1])
+            m=0
+            chd=''
+            chxl=''
+            l=l_whole[:25]
+            if l!=[]:
+                for i in range(len(l)):
+                    chd+=str(l[i][1])+','
+                    chxl+='|'+l[i][0]
+                    if m<l[i][1]:
+                        m=l[i][1]
+                chd=chd[:-1]
+                print m
+                print chd
+                print chxl
+                rate=float(total)*100/length
+                ratei=int(round(rate,1))
+
+                self.response.out.write("""<div> <img src=\"http://chart.apis.google.com/chart?cht=p3&chf=bg,s,ccd6da&chd=t:%s,%s&chs=700x200&chdl=plagiarism_rate&chl=plagiarism_rate\"
+                                        classed=\"displayed\" alt=\"Graph: no internet connection.\" align=\"center\"/><br/>
+                                        """
+                                        %( str(ratei), str(100-ratei) ) )
+                self.response.out.write("<br>the plagiarism rate: %.5f%%</div>" %rate)
+                self.response.out.write("<br>the number of plagiarism: %d</div>" %total)
+
+                self.response.out.write("""<br><div> <img src=\"http://chart.apis.google.com/chart?cht=bvs&chf=bg,s,ccd6da&chs=1000x250&&chds=0,%s&chco=FFC6A5|FFFF42&chbh=40&chd=t:%s&chxt=x&chyr=10000&chxl=0:%s\"
+                                        classed=\"displayed\" alt=\"Graph: no internet connection.\" align=\"center\"/><br/>
+                                        """
+                                        %( str(m), chd, chxl ) )
+                self.response.out.write("</div>")
+
+                self.response.out.write("""<br><div><table id="main-table">
+                               <tr>
+                               <th>Source_file</th>
+                               <th>Detected Plagiarism</th>
+                               </tr>
+                            """)
+                for i in range(len(l_whole)):
+                    self.response.out.write('<tr><td>%s</td><td>%s</td></tr>' %(l_whole[i][0],l_whole[i][1]))
+                self.response.out.write('</div>')
+                self.response.out.write('<br>Parameters: Window_size: %s Overlap_size: %s Number_of_instances: %s' %(window_size,overlap_size,number_of_instances))
+
+            else:
+                self.response.out.write('<h1>No plagiarism</h1>')
+        else:
+            self.response.out.write('No result!')
+        self.response.out.write('</body></html>')
+
+
+class ShowUsageReportHandler(webapp.RequestHandler):
+    #show usage report
+    def get(self,user_id):
+        user_id = str(urllib.unquote(user_id))
+        user = users.get_current_user()
+
+        self.response.out.write("""<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+                           <html>
+                           <head>
+                           <link rel="stylesheet" type="text/css" href="../static/style.css" />
+                           <link href='http://fonts.googleapis.com/css?family=Belgrano' rel='stylesheet' type='text/css'>
+                           </head>
+                           <body>
+                           """)
+        query=db.GqlQuery('SELECT * FROM Userlog WHERE user_id=:1 ORDER BY time desc',user.user_id())
+        q=query.fetch(1000)
+        self.response.out.write("""<table id="main-table">
+                                   <tr>
+                                   <th>File Name</th>
+                                   <th>Window size</th>
+                                   <th>Overlap size</th>
+                                   <th>Number of Instances</th>
+                                   <th>Time</th>
+                                   </tr>
+                                """)
+        total=0
+        for e in q:
+            self.response.out.write('<tr><td>%s</td><td>%d</td><td>%d</td><td>%d</td><td>%s</td></tr>' %(e.file_key.filename,e.window_size,e.overlap_size,e.number_of_instances,e.time.replace(microsecond=0)))
+            total+=e.number_of_instances
+        self.response.out.write('</table>')
+        self.response.out.write('You have used %d instances in total</body></html>' %total)
+
+class StatisticsHandler(webapp.RequestHandler):
+    def get(self):
+        query=db.GqlQuery('SELECT * FROM Result')
+        results=query.fetch(1000)
+        d={}
+        l=[]
+        for e in results:
+            dic=json.loads(e.result)
+            for k in dic.keys():
+                if d.has_key(k):
+                    d[k]+=int( dic[k] )
+                else:
+                    d.update( {k:int(dic[k])} )
+        if d!={}:
+            del d['window_size']
+            del d['overlap_size']
+            del d['number_of_instances']
+            del d['length']
+            l = sorted(d.items(),key=lambda x:x[1],reverse=True)[:10]
+            chd=''
+            chxl=''
+            m=0
+        if l!=[]:
+            self.response.out.write("""<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+                                       <html>
+                                       <head>
+                                       <link rel="stylesheet" type="text/css" href="../static/style.css" />
+                                       <link href='http://fonts.googleapis.com/css?family=Belgrano' rel='stylesheet' type='text/css'>
+                                       </head>
+                                       <body>
+                                    """)
+            for i in range(len(l)):
+                chd+=str(l[i][1])+','
+                chxl+='|'+l[i][0]
+                if m<l[i][1]:
+                    m=l[i][1]
+            chd=chd[:-1]
+            print m
+            print chd
+            print chxl
+            self.response.out.write("""<img src=\"http://chart.apis.google.com/chart?cht=bvs&chf=bg,s,ccd6da&chs=500x250&&chds=0,%d&chco=FFC6A5|FFFF42&chbh=40&chd=t:%s&chxt=x&chyr=10000&chxl=0:%s\"
+                                    classed=\"displayed\" alt=\"Graph: no internet connection.\" align=\"center\"/><br>
+                                    """
+                                    %( m, chd, chxl ) )
+
+
+            self.response.out.write("""<br><table id="main-table">
+                                      <caption>Top 10 plagiarised source files</caption>
+                                       <tr>
+                                       <th>Source_file</th>
+                                       <th>Total detected plagiarism</th>
+                                       </tr>
+                                    """)
+            for i in range(len(l)):
+                self.response.out.write('<tr><td>%s</td><td>%s</td></tr>' %(l[i][0],l[i][1]))
+
+app = webapp.WSGIApplication(
+          [('/', MainHandler),
+           ('/upload', UploadHandler),
+           ('/serve/([^/]+)?', ServeHandler),
+           ('/queue/([^/]+)?', QueueHandler),
+           ('/get_queue', GetQueueHandler),
+           ('/result/([^/]+)?', ResultHandler),
+           ('/show_result/([^/]+)?', ShowResultHandler),
+           ('/plain_text/([^/]+)?', PlainTextHandler),
+           ('/show_plain_text/([^/]+)?', ShowPlainTextHandler),
+           ('/show_usage_report/([^/]+)?', ShowUsageReportHandler),
+           ('/show_statistics', StatisticsHandler),
+          ], debug=True)

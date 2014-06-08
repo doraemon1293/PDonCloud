@@ -4,7 +4,7 @@ PDonCloud
 URL:
 doraemon1293513.appspot.com
 
-plagiarism detection based on 3 different cloud computing platforms -- GoogleAppEngine(GAE), AmazonWebService EC2 and OpenStack.
+A plagiarism detection system based on 3 different cloud computing platforms -- GoogleAppEngine(GAE), AmazonWebService EC2 and OpenStack.
 
 The user's interface is on GAE. Users can to upload the suspicious file, choose the number of instances they want and check the result. The usage log is recorded for the charging purpose.
 
